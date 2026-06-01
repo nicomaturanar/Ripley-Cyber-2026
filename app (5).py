@@ -19,7 +19,7 @@ BASE_URL = "https://ripley-prod.mirakl.net/api"
 def get_headers():
     return {
         "Authorization": API_KEY,
-        "Content-Type": "application/json",
+        "Accept": "application/json",
     }
 
 # ─── Llamada genérica a la API ──────────────────────────────────────────────
@@ -29,6 +29,9 @@ def call_api(endpoint: str, params: dict = {}) -> dict | None:
         response = requests.get(url, headers=get_headers(), params=params, timeout=30)
         response.raise_for_status()
         return response.json()
+    except requests.exceptions.HTTPError as e:
+        st.error(f"Error HTTP {response.status_code}: {response.text}")
+        return None
     except requests.exceptions.RequestException as e:
         st.error(f"Error al conectar con la API de Ripley: {e}")
         return None
@@ -37,8 +40,9 @@ def call_api(endpoint: str, params: dict = {}) -> dict | None:
 @st.cache_data(ttl=300)
 def get_orders(date_str: str) -> list:
     """Obtiene todas las órdenes del día seleccionado."""
-    start_dt = f"{date_str}T00:00:00Z"
-    end_dt   = f"{date_str}T23:59:59Z"
+    # Formato correcto para Mirakl: ISO 8601 con timezone
+    start_dt = f"{date_str}T00:00:00+00:00"
+    end_dt   = f"{date_str}T23:59:59+00:00"
 
     all_orders = []
     offset = 0
@@ -46,13 +50,12 @@ def get_orders(date_str: str) -> list:
 
     while True:
         params = {
-            "start_date":          start_dt,
-            "end_date":            end_dt,
-            "order_state_codes":   "SHIPPING,SHIPPED,TO_COLLECT,RECEIVED,CLOSED,REFUSED,ORDER_ACCEPTED",
-            "max":                 limit,
-            "start_index":         offset,
-            "sort_by":             "created_date",
-            "order_by":            "DESC",
+            "start_date":  start_dt,
+            "end_date":    end_dt,
+            "max":         limit,
+            "offset":      offset,
+            "sort":        "dateCreated",
+            "dir":         "DESC",
         }
         data = call_api("/orders", params)
         if not data:
@@ -78,21 +81,22 @@ def parse_orders(orders: list) -> pd.DataFrame:
         except Exception:
             created_dt = None
 
+        order_state = o.get("order_state", "")
+
         for line in o.get("order_lines", []):
-            price      = float(line.get("price",        0) or 0)
-            qty        = int(line.get("quantity",        1) or 1)
-            total_line = price * qty
+            price    = float(line.get("price", 0) or 0)
+            qty      = int(line.get("quantity", 1) or 1)
 
             rows.append({
                 "order_id":    o.get("order_id", ""),
                 "created_at":  created_dt,
-                "status":      o.get("order_state_label", o.get("order_state", "")),
-                "price":       total_line,
+                "status":      order_state,
+                "price":       price,
                 "quantity":    qty,
                 "sku":         line.get("offer_sku", ""),
                 "product":     line.get("product_title", ""),
                 "category":    line.get("category_label", ""),
-                "brand":       line.get("brand", ""),
+                "brand":       line.get("offer_state_code", ""),  # Mirakl no tiene brand directo
             })
 
     if not rows:
@@ -206,46 +210,15 @@ if df["category"].notna().any() and (df["category"] != "").any():
         .reset_index()
     )
     cat.columns = ["Categoría", "Órdenes", "GMV", "Unidades"]
-    cat["GMV"] = cat["GMV"].apply(lambda x: f"${x:,.0f}")
+    cat_display = cat.copy()
+    cat_display["GMV"] = cat_display["GMV"].apply(lambda x: f"${x:,.0f}")
     col_c1, col_c2 = st.columns([1, 2])
     with col_c1:
-        st.dataframe(cat, use_container_width=True, hide_index=True)
+        st.dataframe(cat_display, use_container_width=True, hide_index=True)
     with col_c2:
-        chart_data = (
-            df.groupby("category")["price"].sum()
-            .sort_values(ascending=False)
-            .head(10)
-        )
-        st.bar_chart(chart_data)
+        st.bar_chart(cat.set_index("Categoría")["GMV"])
 else:
     st.info("No hay datos de categoría disponibles para este período.")
-
-st.divider()
-
-# ─── Performance por Marca ───────────────────────────────────────────────────
-st.subheader("🏷️ Performance por Marca")
-if df["brand"].notna().any() and (df["brand"] != "").any():
-    brand = (
-        df.groupby("brand")
-        .agg(ordenes=("order_id", "nunique"), gmv=("price", "sum"), unidades=("quantity", "sum"))
-        .sort_values("gmv", ascending=False)
-        .head(10)
-        .reset_index()
-    )
-    brand.columns = ["Marca", "Órdenes", "GMV", "Unidades"]
-    brand["GMV"] = brand["GMV"].apply(lambda x: f"${x:,.0f}")
-    col_b1, col_b2 = st.columns([1, 2])
-    with col_b1:
-        st.dataframe(brand, use_container_width=True, hide_index=True)
-    with col_b2:
-        chart_brand = (
-            df.groupby("brand")["price"].sum()
-            .sort_values(ascending=False)
-            .head(10)
-        )
-        st.bar_chart(chart_brand)
-else:
-    st.info("No hay datos de marca disponibles para este período.")
 
 st.divider()
 
@@ -263,8 +236,8 @@ st.divider()
 
 # ─── Tabla detalle ────────────────────────────────────────────────────────────
 st.subheader("📋 Detalle de órdenes")
-df_display = df[["order_id", "created_at", "status", "price", "quantity", "product", "category", "brand"]].copy()
-df_display.columns = ["Order ID", "Fecha creación", "Estado", "Precio", "Unidades", "Producto", "Categoría", "Marca"]
+df_display = df[["order_id", "created_at", "status", "price", "quantity", "product", "category"]].copy()
+df_display.columns = ["Order ID", "Fecha creación", "Estado", "Precio", "Unidades", "Producto", "Categoría"]
 df_display = df_display.sort_values("Fecha creación", ascending=False)
 st.dataframe(df_display, use_container_width=True, hide_index=True)
 
