@@ -230,15 +230,33 @@ with col_f:
 
 st.divider()
 
-# ─── Detalle ──────────────────────────────────────────────────────────────────
-st.subheader("📋 Detalle de órdenes")
-df_display = df[["order_id","created_at","status","price","quantity","sku","product","category","brand"]].copy()
-df_display.columns = ["Order ID","Fecha creación","Estado","Precio","Unidades","SKU","Producto","Categoría","Marca"]
-df_display = df_display.sort_values("Fecha creación", ascending=False)
-st.dataframe(df_display, use_container_width=True, hide_index=True)
+# ─── Detalle por SKU 15 ───────────────────────────────────────────────────────
+st.subheader("📋 Detalle por SKU 15")
 
-csv = df_display.to_csv(index=False).encode("utf-8")
-st.download_button("⬇️ Descargar CSV", csv, "ordenes_ripley_cyber.csv", "text/csv")
+df["sku15"] = df["sku"].apply(lambda x: x[:-3] if isinstance(x, str) and len(x) > 3 else x)
+
+sku15_df = (
+    df.groupby("sku15")
+    .agg(
+        producto  = ("product",   "first"),
+        categoria = ("category",  "first"),
+        marca     = ("brand",     "first"),
+        ordenes   = ("order_id",  "nunique"),
+        unidades  = ("quantity",  "sum"),
+        gmv       = ("price",     "sum"),
+    )
+    .reset_index()
+    .sort_values("gmv", ascending=False)
+)
+
+sku15_df.columns = ["SKU 15","Producto","Categoría","Marca","Órdenes","Unidades","GMV"]
+sku15_disp = sku15_df.copy()
+sku15_disp["GMV"] = sku15_disp["GMV"].apply(lambda x: f"${x:,.0f}")
+
+st.dataframe(sku15_disp, use_container_width=True, hide_index=True)
+
+csv = sku15_df.to_csv(index=False).encode("utf-8")
+st.download_button("⬇️ Descargar CSV", csv, "ordenes_ripley_sku15.csv", "text/csv")
 
 if auto_refresh:
     time.sleep(600)
