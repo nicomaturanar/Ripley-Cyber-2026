@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, date, timezone
 import pandas as pd
 import time
 import unicodedata
@@ -17,55 +17,17 @@ BASE_URL = "https://ripley-prod.mirakl.net/api"
 def get_headers():
     return {"Authorization": API_KEY, "Accept": "application/json"}
 
-@st.cache_data(ttl=300)
-def get_orders(date_str: str) -> list:
-    # Chile es UTC-4, así que un día local = desde las 04:00 UTC hasta las 04:00 UTC del día siguiente
-    start_dt = f"{date_str}T04:00:00+00:00"
-    # Día siguiente a las 03:59:59 UTC
-    from datetime import date
-    d = date.fromisoformat(date_str)
-    next_day = (d + timedelta(days=1)).isoformat()
-    end_dt = f"{next_day}T03:59:59+00:00"
-
-    all_orders = []
-    offset = 0
-    limit  = 100
-
-    while True:
-        params = {
-            "start_date": start_dt,
-            "end_date":   end_dt,
-            "max":        limit,
-            "offset":     offset,
-        }
-        url = f"{BASE_URL}/orders"
-        try:
-            r = requests.get(url, headers=get_headers(), params=params, timeout=30)
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:
-            st.error(f"Error API: {e}")
-            break
-
-        orders = data.get("orders", [])
-        all_orders.extend(orders)
-        total = data.get("total_count", 0)
-        offset += limit
-        if offset >= total or len(orders) == 0:
-            break
-
-    return all_orders
-
+# ── Normalización ─────────────────────────────────────────────────────────────
 def normalizar(texto):
     texto = texto.upper()
     return "".join(c for c in unicodedata.normalize("NFD", texto) if unicodedata.category(c) != "Mn")
 
+# ── Marcas ────────────────────────────────────────────────────────────────────
 MARCAS = [
     "PANAMA JACK", "16 HRS", "BRUNO ROSSI", "ZAPPA", "POLLINI",
     "DAKOTA", "ENDURO", "IBIZAS HERITAGE", "LUZ DA LUA", "MINGO",
     "SHERPAS", "SHERPA S", "PLUMA",
 ]
-
 SKU_PREFIJOS = {
     "PJ":  "Panama Jack",
     "PO":  "Pollini",
@@ -84,11 +46,88 @@ def extract_brand(description: str, sku: str = "") -> str:
             return marca
     return "Sin marca"
 
-def normalizar_categoria(cat):
-    cat_norm = normalizar(cat)
+# ── Línea y Categoría ─────────────────────────────────────────────────────────
+LINEAS_CALZADO = [
+    "FLIP FLOP", "BALLERINA", "PANTUFLA", "ZAPATILLA", "SANDALIA",
+    "MAFALDA", "MOCASIN", "ZAPATO", "BOTIN", "BOTA", "ALPARGATA",
+]
+LINEAS_ROPA = [
+    "CAMISA MC", "CAMISA ML", "POLERA MC", "POLERA ML", "POLERA PIQUE",
+    "PARKA ML", "TRAJE DE BANO",
+    "BERMUDA", "BUZO", "CAMISA", "CHAQUETA", "CORTAVIENTO", "GORRO",
+    "JEANS", "JOCKEY", "JOGGER", "PANTALON", "PARKA", "POLAR",
+    "POLERON", "SHORT",
+]
+LINEAS_BAGS = [
+    "BACKPACK", "BANANO", "BANDANAS", "BANDOLERA", "BELTBAG", "BILLETERAS",
+    "BOLSO", "BOWLING", "CALCETIN", "CARTERAS", "CHARMS", "CINTURONES",
+    "CINTURON", "CLASICAS", "CLUTCH", "CROSSBODY", "ESTUCHES", "FIESTA",
+    "LLAVERO", "MOCHILA", "PANUELOS", "STRAPS", "TOTE",
+]
+GENEROS = ["NINA", "NINO", "HOMBRE", "MUJER", "UNISEX"]
+
+def extraer_linea_y_categoria(nombre, sku):
+    n = normalizar(nombre)
+    s = normalizar(sku)
+
+    if "SEGURIDAD" in n or "SEGURIDAD" in s:
+        return "Seguridad", "Calzado"
+
+    for linea in LINEAS_ROPA:
+        if normalizar(linea) in n:
+            return linea.title(), "Ropa"
+
+    for linea in LINEAS_BAGS:
+        if normalizar(linea) in n:
+            return linea.title(), "Bags & Accesorios"
+
+    for linea in LINEAS_CALZADO:
+        if normalizar(linea) in n:
+            return linea.title(), "Calzado"
+
+    return "Sin línea", "No identificado"
+
+def extraer_genero(nombre):
+    n = normalizar(nombre)
+    if "CARTERA" in n:
+        return "Mujer"
+    for genero in GENEROS:
+        if normalizar(genero) in n:
+            return genero.title()
+    return "Sin género"
+
+def normalizar_categoria_api(cat):
+    cat_norm = normalizar(cat) if cat else ""
     if "ZAPATILLA" in cat_norm:
         return "Zapatilla"
     return cat.strip() if cat else ""
+
+# ── API ───────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def get_orders(date_str: str) -> list:
+    start_dt = f"{date_str}T04:00:00+00:00"
+    next_day  = (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
+    end_dt    = f"{next_day}T03:59:59+00:00"
+
+    all_orders = []
+    offset = 0
+    limit  = 100
+    while True:
+        params = {"start_date": start_dt, "end_date": end_dt, "max": limit, "offset": offset}
+        try:
+            r = requests.get(f"{BASE_URL}/orders", headers=get_headers(), params=params, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            st.error(f"Error API: {e}")
+            break
+        orders = data.get("orders", [])
+        all_orders.extend(orders)
+        total  = data.get("total_count", 0)
+        offset += limit
+        if offset >= total or len(orders) == 0:
+            break
+    return all_orders
 
 def parse_orders(orders: list) -> pd.DataFrame:
     rows = []
@@ -96,32 +135,33 @@ def parse_orders(orders: list) -> pd.DataFrame:
         created_raw = o.get("created_date", "")
         try:
             created_dt = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
-            # Convertir a hora Chile (UTC-4)
             created_dt = created_dt.astimezone(timezone(timedelta(hours=-4)))
         except Exception:
             created_dt = None
 
-        order_state = o.get("order_state", "")
-
         for line in o.get("order_lines", []):
-            price = float(line.get("price", 0) or 0)
-            qty   = int(line.get("quantity", 1) or 1)
-            desc  = line.get("description", "") or ""
+            desc    = line.get("description", "") or ""
+            sku     = line.get("offer_sku", "") or ""
+            product = line.get("product_title", "") or ""
+            linea, categoria = extraer_linea_y_categoria(product, sku)
 
             rows.append({
                 "order_id":   o.get("order_id", ""),
                 "created_at": created_dt,
-                "status":     order_state,
-                "price":      price,
-                "quantity":   qty,
-                "sku":        line.get("offer_sku", ""),
-                "product":    line.get("product_title", ""),
-                "category":   normalizar_categoria(line.get("category_label", "")),
-                "brand":      extract_brand(desc, line.get("offer_sku", "")),
+                "status":     o.get("order_state", ""),
+                "price":      float(line.get("price", 0) or 0),
+                "quantity":   int(line.get("quantity", 1) or 1),
+                "sku":        sku,
+                "sku15":      sku[:-3] if len(sku) > 3 else sku,
+                "product":    product,
+                "category":   categoria,
+                "linea":      linea,
+                "genero":     extraer_genero(product),
+                "brand":      extract_brand(desc, sku),
             })
 
     if not rows:
-        return pd.DataFrame(columns=["order_id","created_at","status","price","quantity","sku","product","category","brand"])
+        return pd.DataFrame(columns=["order_id","created_at","status","price","quantity","sku","sku15","product","category","linea","genero","brand"])
 
     df = pd.DataFrame(rows)
     df["hour_label"] = df["created_at"].apply(lambda x: f"{x.hour:02d}:00" if x is not None else None)
@@ -133,6 +173,7 @@ def parse_orders(orders: list) -> pd.DataFrame:
 st.title("🛍️ Ripley Marketplace — Cyber Dashboard")
 st.caption("Datos en tiempo real vía API Mercado Ripley (Mirakl)")
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Configuración")
     selected_date = st.date_input(
@@ -154,9 +195,34 @@ if not orders_raw:
     st.warning("No se encontraron órdenes para la fecha seleccionada.")
     st.stop()
 
-df = parse_orders(orders_raw)
+df_all = parse_orders(orders_raw)
 
-# ─── KPIs ───────────────────────────────────────────────────────────────────
+# ── Filtros ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.divider()
+    st.header("🔎 Filtros")
+
+    marcas_opts = sorted(df_all["brand"].dropna().unique().tolist())
+    cats_opts   = sorted(df_all["category"].dropna().unique().tolist())
+    lineas_opts = sorted(df_all["linea"].dropna().unique().tolist())
+    generos_opts= sorted(df_all["genero"].dropna().unique().tolist())
+
+    sel_marca  = st.multiselect("Marca",     marcas_opts)
+    sel_cat    = st.multiselect("Categoría", cats_opts)
+    sel_linea  = st.multiselect("Línea",     lineas_opts)
+    sel_genero = st.multiselect("Género",    generos_opts)
+
+df = df_all.copy()
+if sel_marca:  df = df[df["brand"].isin(sel_marca)]
+if sel_cat:    df = df[df["category"].isin(sel_cat)]
+if sel_linea:  df = df[df["linea"].isin(sel_linea)]
+if sel_genero: df = df[df["genero"].isin(sel_genero)]
+
+if df.empty:
+    st.warning("Sin resultados para los filtros seleccionados.")
+    st.stop()
+
+# ── KPIs ──────────────────────────────────────────────────────────────────────
 total_orders = df["order_id"].nunique()
 total_gmv    = df["price"].sum()
 total_units  = df["quantity"].sum()
@@ -171,28 +237,26 @@ c4.metric("🎯 Ticket promedio", f"${avg_ticket:,.0f}")
 
 st.divider()
 
-# ─── Tabla hora a hora ───────────────────────────────────────────────────────
+# ── Hora a hora ───────────────────────────────────────────────────────────────
 st.subheader("🕐 Evolución hora a hora")
 horas = [f"{h:02d}:00" for h in range(24)]
-
 hourly = (
     df.groupby("hour_label")
-    .agg(ordenes=("order_id", "nunique"), gmv=("price", "sum"), unidades=("quantity", "sum"))
+    .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
     .reset_index()
 )
 hourly_table = (
-    hourly[["hour_label", "ordenes", "gmv", "unidades"]]
+    hourly[["hour_label","ordenes","gmv","unidades"]]
     .set_index("hour_label").reindex(horas, fill_value=0).reset_index()
 )
-hourly_table.columns = ["Hora", "Órdenes", "GMV", "Unidades"]
-
+hourly_table.columns = ["Hora","Órdenes","GMV","Unidades"]
 now_chile = datetime.now(timezone(timedelta(hours=-4)))
 if date_str == now_chile.strftime("%Y-%m-%d"):
     hourly_table = hourly_table.iloc[: now_chile.hour + 1]
 
-display_table = hourly_table.copy()
-display_table["GMV"] = display_table["GMV"].apply(lambda x: f"${x:,.0f}")
-st.dataframe(display_table, use_container_width=True, hide_index=True)
+display_h = hourly_table.copy()
+display_h["GMV"] = display_h["GMV"].apply(lambda x: f"${x:,.0f}")
+st.dataframe(display_h, use_container_width=True, hide_index=True)
 
 col_g1, col_g2 = st.columns(2)
 with col_g1:
@@ -204,84 +268,82 @@ with col_g2:
 
 st.divider()
 
-# ─── Categoría ───────────────────────────────────────────────────────────────
+# ── Categoría ─────────────────────────────────────────────────────────────────
 st.subheader("📂 Performance por Categoría")
-if df["category"].notna().any() and (df["category"] != "").any():
-    cat = (
-        df.groupby("category")
-        .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
-        .sort_values("gmv", ascending=False).head(10).reset_index()
-    )
-    cat.columns = ["Categoría","Órdenes","GMV","Unidades"]
-    cat_disp = cat.copy()
-    cat_disp["GMV"] = cat_disp["GMV"].apply(lambda x: f"${x:,.0f}")
-    col_c1, col_c2 = st.columns([1,2])
-    with col_c1:
-        st.dataframe(cat_disp, use_container_width=True, hide_index=True)
-    with col_c2:
-        st.bar_chart(cat.set_index("Categoría")["GMV"])
-else:
-    st.info("Sin datos de categoría.")
+cat = (
+    df.groupby("category")
+    .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
+    .sort_values("gmv", ascending=False).reset_index()
+)
+cat.columns = ["Categoría","Órdenes","GMV","Unidades"]
+cat_d = cat.copy(); cat_d["GMV"] = cat_d["GMV"].apply(lambda x: f"${x:,.0f}")
+col1, col2 = st.columns([1,2])
+with col1: st.dataframe(cat_d, use_container_width=True, hide_index=True)
+with col2: st.bar_chart(cat.set_index("Categoría")["GMV"])
 
 st.divider()
 
-# ─── Marca ────────────────────────────────────────────────────────────────────
+# ── Línea ─────────────────────────────────────────────────────────────────────
+st.subheader("📋 Performance por Línea")
+lin = (
+    df.groupby("linea")
+    .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
+    .sort_values("gmv", ascending=False).head(15).reset_index()
+)
+lin.columns = ["Línea","Órdenes","GMV","Unidades"]
+lin_d = lin.copy(); lin_d["GMV"] = lin_d["GMV"].apply(lambda x: f"${x:,.0f}")
+col1, col2 = st.columns([1,2])
+with col1: st.dataframe(lin_d, use_container_width=True, hide_index=True)
+with col2: st.bar_chart(lin.set_index("Línea")["GMV"])
+
+st.divider()
+
+# ── Marca ─────────────────────────────────────────────────────────────────────
 st.subheader("🏷️ Performance por Marca")
-if df["brand"].notna().any() and (df["brand"] != "").any():
-    brand = (
-        df.groupby("brand")
-        .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
-        .sort_values("gmv", ascending=False).head(10).reset_index()
-    )
-    brand.columns = ["Marca","Órdenes","GMV","Unidades"]
-    brand_disp = brand.copy()
-    brand_disp["GMV"] = brand_disp["GMV"].apply(lambda x: f"${x:,.0f}")
-    col_b1, col_b2 = st.columns([1,2])
-    with col_b1:
-        st.dataframe(brand_disp, use_container_width=True, hide_index=True)
-    with col_b2:
-        st.bar_chart(brand.set_index("Marca")["GMV"])
-else:
-    st.info("Sin datos de marca.")
+brand = (
+    df.groupby("brand")
+    .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
+    .sort_values("gmv", ascending=False).head(10).reset_index()
+)
+brand.columns = ["Marca","Órdenes","GMV","Unidades"]
+brand_d = brand.copy(); brand_d["GMV"] = brand_d["GMV"].apply(lambda x: f"${x:,.0f}")
+col1, col2 = st.columns([1,2])
+with col1: st.dataframe(brand_d, use_container_width=True, hide_index=True)
+with col2: st.bar_chart(brand.set_index("Marca")["GMV"])
 
 st.divider()
 
-# ─── Estados ─────────────────────────────────────────────────────────────────
+# ── Estado ────────────────────────────────────────────────────────────────────
 st.subheader("📊 Distribución por estado")
 status_counts = df.groupby("status")["order_id"].nunique().reset_index()
 status_counts.columns = ["Estado","Órdenes"]
 col_e, col_f = st.columns([1,2])
-with col_e:
-    st.dataframe(status_counts, use_container_width=True, hide_index=True)
-with col_f:
-    st.bar_chart(status_counts.set_index("Estado")["Órdenes"])
+with col_e: st.dataframe(status_counts, use_container_width=True, hide_index=True)
+with col_f: st.bar_chart(status_counts.set_index("Estado")["Órdenes"])
 
 st.divider()
 
-# ─── Detalle por SKU 15 ───────────────────────────────────────────────────────
+# ── SKU 15 ────────────────────────────────────────────────────────────────────
 st.subheader("📋 Detalle por SKU 15")
-
-df["sku15"] = df["sku"].apply(lambda x: x[:-3] if isinstance(x, str) and len(x) > 3 else x)
-
 sku15_df = (
     df.groupby("sku15")
     .agg(
-        producto  = ("product",   "first"),
-        categoria = ("category",  "first"),
-        marca     = ("brand",     "first"),
-        ordenes   = ("order_id",  "nunique"),
-        unidades  = ("quantity",  "sum"),
-        gmv       = ("price",     "sum"),
+        producto  = ("product",  "first"),
+        categoria = ("category", "first"),
+        linea     = ("linea",    "first"),
+        marca     = ("brand",    "first"),
+        genero    = ("genero",   "first"),
+        ordenes   = ("order_id", "nunique"),
+        unidades  = ("quantity", "sum"),
+        gmv       = ("price",    "sum"),
     )
     .reset_index()
     .sort_values("gmv", ascending=False)
 )
-
-sku15_df.columns = ["SKU 15","Producto","Categoría","Marca","Órdenes","Unidades","GMV"]
-sku15_disp = sku15_df.copy()
-sku15_disp["GMV"] = sku15_disp["GMV"].apply(lambda x: f"${x:,.0f}")
-
-st.dataframe(sku15_disp, use_container_width=True, hide_index=True)
+sku15_df.columns = ["SKU 15","Producto","Categoría","Línea","Marca","Género","Órdenes","Unidades","GMV"]
+sku15_d = sku15_df.copy()
+sku15_d["GMV"] = sku15_d["GMV"].apply(lambda x: f"${x:,.0f}")
+st.dataframe(sku15_d, use_container_width=True, hide_index=True)
 
 csv = sku15_df.to_csv(index=False).encode("utf-8")
 st.download_button("⬇️ Descargar CSV", csv, "ordenes_ripley_sku15.csv", "text/csv")
