@@ -3,6 +3,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import time
+import unicodedata
 
 st.set_page_config(
     page_title="Ripley Marketplace — Cyber Dashboard",
@@ -55,12 +56,39 @@ def get_orders(date_str: str) -> list:
 
     return all_orders
 
-def extract_brand(description: str) -> str:
-    """Extrae la marca del campo description (suele ser la primera palabra o segmento)."""
-    if not description:
-        return ""
-    # Description suele venir como "MARCA Modelo descripción..." — tomamos primera palabra
-    return description.split()[0].title() if description.strip() else ""
+def normalizar(texto):
+    texto = texto.upper()
+    return "".join(c for c in unicodedata.normalize("NFD", texto) if unicodedata.category(c) != "Mn")
+
+MARCAS = [
+    "PANAMA JACK", "16 HRS", "BRUNO ROSSI", "ZAPPA", "POLLINI",
+    "DAKOTA", "ENDURO", "IBIZAS HERITAGE", "LUZ DA LUA", "MINGO",
+    "SHERPAS", "SHERPA S", "PLUMA",
+]
+
+SKU_PREFIJOS = {
+    "PJ":  "Panama Jack",
+    "PO":  "Pollini",
+    "16H": "16 Hrs",
+    "BR":  "Bruno Rossi",
+}
+
+def extract_brand(description: str, sku: str = "") -> str:
+    nombre_norm = normalizar(description) if description else ""
+    for marca in MARCAS:
+        if normalizar(marca) in nombre_norm:
+            return "Sherpas" if "SHERPA" in normalizar(marca) else marca.title()
+    sku_up = (sku or "").upper()
+    for prefijo, marca in SKU_PREFIJOS.items():
+        if sku_up.startswith(prefijo):
+            return marca
+    return "Sin marca"
+
+def normalizar_categoria(cat):
+    cat_norm = normalizar(cat)
+    if "ZAPATILLA" in cat_norm:
+        return "Zapatilla"
+    return cat.strip() if cat else ""
 
 def parse_orders(orders: list) -> pd.DataFrame:
     rows = []
@@ -88,8 +116,8 @@ def parse_orders(orders: list) -> pd.DataFrame:
                 "quantity":   qty,
                 "sku":        line.get("offer_sku", ""),
                 "product":    line.get("product_title", ""),
-                "category":   line.get("category_label", ""),
-                "brand":      extract_brand(desc),
+                "category":   normalizar_categoria(line.get("category_label", "")),
+                "brand":      extract_brand(desc, line.get("offer_sku", "")),
             })
 
     if not rows:
