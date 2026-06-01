@@ -59,7 +59,7 @@ LINEAS_ROPA = [
     "POLERON", "SHORT",
 ]
 LINEAS_BAGS = [
-    "BACKPACK", "BANANO", "BANDANAS", "BANDOLERA", "BELTBAG", "BILLETERAS",
+    "BACKPACK", "BANANO", "BANDANAS", "BANDANA", "BANDOLERA", "BELTBAG", "BILLETERAS",
     "BOLSO", "BOWLING", "CALCETIN", "CARTERAS", "CHARMS", "CINTURONES",
     "CINTURON", "CLASICAS", "CLUTCH", "CROSSBODY", "ESTUCHES", "FIESTA",
     "LLAVERO", "MOCHILA", "PANUELOS", "STRAPS", "TOTE",
@@ -157,7 +157,7 @@ def parse_orders(orders: list) -> pd.DataFrame:
                 "category":   categoria,
                 "linea":      linea,
                 "genero":     extraer_genero(product),
-                "brand":      extract_brand(desc, sku),
+                "brand":      extract_brand(desc or product, sku),
             })
 
     if not rows:
