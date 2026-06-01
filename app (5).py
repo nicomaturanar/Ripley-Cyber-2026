@@ -68,23 +68,17 @@ GENEROS = ["NINA", "NINO", "HOMBRE", "MUJER", "UNISEX"]
 
 def extraer_linea_y_categoria(nombre, sku):
     n = normalizar(nombre)
-    s = normalizar(sku)
-
-    if "SEGURIDAD" in n or "SEGURIDAD" in s:
+    if "SEGURIDAD" in n or "SEGURIDAD" in normalizar(sku):
         return "Seguridad", "Calzado"
-
     for linea in LINEAS_ROPA:
         if normalizar(linea) in n:
             return linea.title(), "Ropa"
-
     for linea in LINEAS_BAGS:
         if normalizar(linea) in n:
             return linea.title(), "Bags & Accesorios"
-
     for linea in LINEAS_CALZADO:
         if normalizar(linea) in n:
             return linea.title(), "Calzado"
-
     return "Sin línea", "No identificado"
 
 def extraer_genero(nombre):
@@ -96,11 +90,33 @@ def extraer_genero(nombre):
             return genero.title()
     return "Sin género"
 
-def normalizar_categoria_api(cat):
-    cat_norm = normalizar(cat) if cat else ""
-    if "ZAPATILLA" in cat_norm:
-        return "Zapatilla"
-    return cat.strip() if cat else ""
+# ── Rango año anterior ────────────────────────────────────────────────────────
+def get_rango_anio_anterior(date_str: str):
+    """Retorna el mismo día ISO del año anterior, cortando a la hora actual si es hoy."""
+    chile_tz = timezone(timedelta(hours=-4))
+    ahora    = datetime.now(chile_tz)
+    hoy_str  = ahora.strftime("%Y-%m-%d")
+
+    fecha_actual = date.fromisoformat(date_str)
+    iso_year_ant = fecha_actual.year - 1
+    iso_week     = fecha_actual.isocalendar()[1]
+    iso_day      = fecha_actual.isocalendar()[2]
+    fecha_ant    = date.fromisocalendar(iso_year_ant, iso_week, iso_day)
+
+    # Si estamos viendo hoy → cortar a la hora actual; si no → día completo
+    if date_str == hoy_str:
+        hora_corte = ahora.strftime("%H:%M:%S")
+    else:
+        hora_corte = "23:59:59"
+
+    start_dt = f"{fecha_ant}T04:00:00+00:00"   # 00:00 Chile = 04:00 UTC
+    # hora_corte está en Chile (UTC-4), convertir a UTC
+    hora_corte_dt = datetime.strptime(hora_corte, "%H:%M:%S")
+    hora_corte_utc = (hora_corte_dt + timedelta(hours=4)).strftime("%H:%M:%S")
+    next_ant  = (fecha_ant + timedelta(days=1)).isoformat()
+    end_dt    = f"{next_ant}T{hora_corte_utc}+00:00"
+
+    return start_dt, end_dt, fecha_ant, hora_corte
 
 # ── API ───────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
@@ -108,7 +124,14 @@ def get_orders(date_str: str) -> list:
     start_dt = f"{date_str}T04:00:00+00:00"
     next_day  = (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
     end_dt    = f"{next_day}T03:59:59+00:00"
+    return _fetch_orders(start_dt, end_dt)
 
+@st.cache_data(ttl=300)
+def get_orders_anterior(date_str: str) -> list:
+    start_dt, end_dt, _, _ = get_rango_anio_anterior(date_str)
+    return _fetch_orders(start_dt, end_dt)
+
+def _fetch_orders(start_dt: str, end_dt: str) -> list:
     all_orders = []
     offset = 0
     limit  = 100
@@ -164,8 +187,48 @@ def parse_orders(orders: list) -> pd.DataFrame:
         return pd.DataFrame(columns=["order_id","created_at","status","price","quantity","sku","sku15","product","category","linea","genero","brand"])
 
     df = pd.DataFrame(rows)
-    df["hour_label"] = df["created_at"].apply(lambda x: f"{x.hour:02d}:00" if x is not None else None)
+    df["hour_label"] = df["created_at"].apply(lambda x: f"{x.hour:02d}:00" if x else None)
     return df
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def var_pct(actual, anterior):
+    if anterior and anterior != 0:
+        return (actual - anterior) / anterior
+    return None
+
+def fmt_var(v):
+    if v is None:
+        return "—"
+    arrow = "▲" if v >= 0 else "▼"
+    return f"{arrow} {abs(v)*100:.1f}%"
+
+def tabla_performance(df_act, df_ant, col, titulo, emoji):
+    """Genera tabla agrupada con variaciones vs año anterior."""
+    act = (
+        df_act.groupby(col)
+        .agg(gmv_act=("price","sum"), uni_act=("quantity","sum"))
+        .reset_index()
+    )
+    ant = (
+        df_ant.groupby(col)
+        .agg(gmv_ant=("price","sum"), uni_ant=("quantity","sum"))
+        .reset_index()
+    ) if df_ant is not None and not df_ant.empty else pd.DataFrame(columns=[col,"gmv_ant","uni_ant"])
+
+    merged = act.merge(ant, on=col, how="left")
+    merged["gmv_ant"]  = merged["gmv_ant"].fillna(0)
+    merged["uni_ant"]  = merged["uni_ant"].fillna(0)
+    merged["var_gmv"]  = merged.apply(lambda r: var_pct(r["gmv_act"], r["gmv_ant"]), axis=1)
+    merged["var_uni"]  = merged.apply(lambda r: var_pct(r["uni_act"], r["uni_ant"]), axis=1)
+    merged = merged.sort_values("gmv_act", ascending=False)
+
+    display = merged[[col,"gmv_act","var_gmv","uni_act","var_uni"]].copy()
+    display.columns = [titulo, "GMV", "Var% GMV", "Unidades", "Var% Uni"]
+    display["GMV"]      = display["GMV"].apply(lambda x: f"${x:,.0f}")
+    display["Var% GMV"] = display["Var% GMV"].apply(fmt_var)
+    display["Var% Uni"] = display["Var% Uni"].apply(fmt_var)
+
+    return display, merged
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  UI
@@ -188,35 +251,49 @@ with st.sidebar:
 
 date_str = selected_date.strftime("%Y-%m-%d")
 
-with st.spinner("Cargando órdenes desde Ripley..."):
-    orders_raw = get_orders(date_str)
+# ── Carga de datos ────────────────────────────────────────────────────────────
+col_spin1, col_spin2 = st.columns(2)
+with col_spin1:
+    with st.spinner("Cargando órdenes actuales..."):
+        orders_raw = get_orders(date_str)
+with col_spin2:
+    with st.spinner("Cargando año anterior..."):
+        orders_ant = get_orders_anterior(date_str)
 
 if not orders_raw:
     st.warning("No se encontraron órdenes para la fecha seleccionada.")
     st.stop()
 
 df_all = parse_orders(orders_raw)
+df_ant = parse_orders(orders_ant) if orders_ant else pd.DataFrame()
+
+# Info año anterior
+_, _, fecha_ant, hora_corte = get_rango_anio_anterior(date_str)
+st.caption(f"📅 Comparando vs {fecha_ant} hasta las {hora_corte[:5]} h (mismo día ISO año anterior)")
 
 # ── Filtros ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.divider()
     st.header("🔎 Filtros")
-
-    marcas_opts = sorted(df_all["brand"].dropna().unique().tolist())
-    cats_opts   = sorted(df_all["category"].dropna().unique().tolist())
-    lineas_opts = sorted(df_all["linea"].dropna().unique().tolist())
-    generos_opts= sorted(df_all["genero"].dropna().unique().tolist())
+    marcas_opts  = sorted(df_all["brand"].dropna().unique().tolist())
+    cats_opts    = sorted(df_all["category"].dropna().unique().tolist())
+    lineas_opts  = sorted(df_all["linea"].dropna().unique().tolist())
+    generos_opts = sorted(df_all["genero"].dropna().unique().tolist())
 
     sel_marca  = st.multiselect("Marca",     marcas_opts)
     sel_cat    = st.multiselect("Categoría", cats_opts)
     sel_linea  = st.multiselect("Línea",     lineas_opts)
     sel_genero = st.multiselect("Género",    generos_opts)
 
-df = df_all.copy()
-if sel_marca:  df = df[df["brand"].isin(sel_marca)]
-if sel_cat:    df = df[df["category"].isin(sel_cat)]
-if sel_linea:  df = df[df["linea"].isin(sel_linea)]
-if sel_genero: df = df[df["genero"].isin(sel_genero)]
+def aplicar_filtros(df):
+    if sel_marca:  df = df[df["brand"].isin(sel_marca)]
+    if sel_cat:    df = df[df["category"].isin(sel_cat)]
+    if sel_linea:  df = df[df["linea"].isin(sel_linea)]
+    if sel_genero: df = df[df["genero"].isin(sel_genero)]
+    return df
+
+df     = aplicar_filtros(df_all.copy())
+df_ant = aplicar_filtros(df_ant.copy()) if not df_ant.empty else df_ant
 
 if df.empty:
     st.warning("Sin resultados para los filtros seleccionados.")
@@ -228,11 +305,14 @@ total_gmv    = df["price"].sum()
 total_units  = df["quantity"].sum()
 avg_ticket   = total_gmv / total_orders if total_orders else 0
 
+gmv_ant  = df_ant["price"].sum()    if not df_ant.empty else 0
+uni_ant  = df_ant["quantity"].sum() if not df_ant.empty else 0
+
 st.subheader(f"📊 Resumen del {date_str} (hora Chile)")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🛒 Órdenes",         f"{total_orders:,}")
-c2.metric("💰 GMV",             f"${total_gmv:,.0f}")
-c3.metric("📦 Unidades",        f"{total_units:,}")
+c2.metric("💰 GMV",             f"${total_gmv:,.0f}",  fmt_var(var_pct(total_gmv,  gmv_ant)))
+c3.metric("📦 Unidades",        f"{total_units:,}",    fmt_var(var_pct(total_units, uni_ant)))
 c4.metric("🎯 Ticket promedio", f"${avg_ticket:,.0f}")
 
 st.divider()
@@ -270,46 +350,37 @@ st.divider()
 
 # ── Categoría ─────────────────────────────────────────────────────────────────
 st.subheader("📂 Performance por Categoría")
-cat = (
-    df.groupby("category")
-    .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
-    .sort_values("gmv", ascending=False).reset_index()
-)
-cat.columns = ["Categoría","Órdenes","GMV","Unidades"]
-cat_d = cat.copy(); cat_d["GMV"] = cat_d["GMV"].apply(lambda x: f"${x:,.0f}")
-col1, col2 = st.columns([1,2])
+cat_d, _ = tabla_performance(df, df_ant, "category", "Categoría", "📂")
+col1, col2 = st.columns([2,1])
 with col1: st.dataframe(cat_d, use_container_width=True, hide_index=True)
-with col2: st.bar_chart(cat.set_index("Categoría")["GMV"])
+with col2: st.bar_chart(df.groupby("category")["price"].sum().sort_values(ascending=False))
 
 st.divider()
 
 # ── Línea ─────────────────────────────────────────────────────────────────────
 st.subheader("📋 Performance por Línea")
-lin = (
-    df.groupby("linea")
-    .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
-    .sort_values("gmv", ascending=False).head(15).reset_index()
-)
-lin.columns = ["Línea","Órdenes","GMV","Unidades"]
-lin_d = lin.copy(); lin_d["GMV"] = lin_d["GMV"].apply(lambda x: f"${x:,.0f}")
-col1, col2 = st.columns([1,2])
+lin_d, _ = tabla_performance(df, df_ant, "linea", "Línea", "👟")
+col1, col2 = st.columns([2,1])
 with col1: st.dataframe(lin_d, use_container_width=True, hide_index=True)
-with col2: st.bar_chart(lin.set_index("Línea")["GMV"])
+with col2: st.bar_chart(df.groupby("linea")["price"].sum().sort_values(ascending=False).head(15))
 
 st.divider()
 
 # ── Marca ─────────────────────────────────────────────────────────────────────
 st.subheader("🏷️ Performance por Marca")
-brand = (
-    df.groupby("brand")
-    .agg(ordenes=("order_id","nunique"), gmv=("price","sum"), unidades=("quantity","sum"))
-    .sort_values("gmv", ascending=False).head(10).reset_index()
-)
-brand.columns = ["Marca","Órdenes","GMV","Unidades"]
-brand_d = brand.copy(); brand_d["GMV"] = brand_d["GMV"].apply(lambda x: f"${x:,.0f}")
-col1, col2 = st.columns([1,2])
+brand_d, _ = tabla_performance(df, df_ant, "brand", "Marca", "🏷️")
+col1, col2 = st.columns([2,1])
 with col1: st.dataframe(brand_d, use_container_width=True, hide_index=True)
-with col2: st.bar_chart(brand.set_index("Marca")["GMV"])
+with col2: st.bar_chart(df.groupby("brand")["price"].sum().sort_values(ascending=False).head(10))
+
+st.divider()
+
+# ── Género ────────────────────────────────────────────────────────────────────
+st.subheader("👤 Performance por Género")
+gen_d, _ = tabla_performance(df, df_ant, "genero", "Género", "👤")
+col1, col2 = st.columns([2,1])
+with col1: st.dataframe(gen_d, use_container_width=True, hide_index=True)
+with col2: st.bar_chart(df.groupby("genero")["price"].sum().sort_values(ascending=False))
 
 st.divider()
 
@@ -325,7 +396,8 @@ st.divider()
 
 # ── SKU 15 ────────────────────────────────────────────────────────────────────
 st.subheader("📋 Detalle por SKU 15")
-sku15_df = (
+
+sku15_act = (
     df.groupby("sku15")
     .agg(
         producto  = ("product",  "first"),
@@ -338,14 +410,31 @@ sku15_df = (
         gmv       = ("price",    "sum"),
     )
     .reset_index()
-    .sort_values("gmv", ascending=False)
 )
-sku15_df.columns = ["SKU 15","Producto","Categoría","Línea","Marca","Género","Órdenes","Unidades","GMV"]
-sku15_d = sku15_df.copy()
+
+if not df_ant.empty:
+    sku15_ant = (
+        df_ant.groupby("sku15")
+        .agg(uni_ant=("quantity","sum"), gmv_ant=("price","sum"))
+        .reset_index()
+    )
+    sku15_act = sku15_act.merge(sku15_ant, on="sku15", how="left")
+    sku15_act["gmv_ant"] = sku15_act["gmv_ant"].fillna(0)
+    sku15_act["uni_ant"] = sku15_act["uni_ant"].fillna(0)
+    sku15_act["Var% GMV"] = sku15_act.apply(lambda r: fmt_var(var_pct(r["gmv"], r["gmv_ant"])), axis=1)
+    sku15_act["Var% Uni"] = sku15_act.apply(lambda r: fmt_var(var_pct(r["unidades"], r["uni_ant"])), axis=1)
+    sku15_act = sku15_act.sort_values("gmv", ascending=False)
+    sku15_d = sku15_act[["sku15","producto","categoria","linea","marca","genero","ordenes","unidades","Var% Uni","gmv","Var% GMV"]].copy()
+    sku15_d.columns = ["SKU 15","Producto","Categoría","Línea","Marca","Género","Órdenes","Unidades","Var% Uni","GMV","Var% GMV"]
+else:
+    sku15_act = sku15_act.sort_values("gmv", ascending=False)
+    sku15_d = sku15_act[["sku15","producto","categoria","linea","marca","genero","ordenes","unidades","gmv"]].copy()
+    sku15_d.columns = ["SKU 15","Producto","Categoría","Línea","Marca","Género","Órdenes","Unidades","GMV"]
+
 sku15_d["GMV"] = sku15_d["GMV"].apply(lambda x: f"${x:,.0f}")
 st.dataframe(sku15_d, use_container_width=True, hide_index=True)
 
-csv = sku15_df.to_csv(index=False).encode("utf-8")
+csv = sku15_act.to_csv(index=False).encode("utf-8")
 st.download_button("⬇️ Descargar CSV", csv, "ordenes_ripley_sku15.csv", "text/csv")
 
 if auto_refresh:
