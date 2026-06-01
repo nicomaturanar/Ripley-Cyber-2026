@@ -232,8 +232,8 @@ st.divider()
 
 # ─── Detalle ──────────────────────────────────────────────────────────────────
 st.subheader("📋 Detalle de órdenes")
-df_display = df[["order_id","created_at","status","price","quantity","product","category","brand"]].copy()
-df_display.columns = ["Order ID","Fecha creación","Estado","Precio","Unidades","Producto","Categoría","Marca"]
+df_display = df[["order_id","created_at","status","price","quantity","sku","product","category","brand"]].copy()
+df_display.columns = ["Order ID","Fecha creación","Estado","Precio","Unidades","SKU","Producto","Categoría","Marca"]
 df_display = df_display.sort_values("Fecha creación", ascending=False)
 st.dataframe(df_display, use_container_width=True, hide_index=True)
 
