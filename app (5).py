@@ -109,12 +109,17 @@ def get_rango_anio_anterior(date_str: str):
     else:
         hora_corte = "23:59:59"
 
-    start_dt = f"{fecha_ant}T04:00:00+00:00"   # 00:00 Chile = 04:00 UTC
-    # hora_corte está en Chile (UTC-4), convertir a UTC
-    hora_corte_dt = datetime.strptime(hora_corte, "%H:%M:%S")
-    hora_corte_utc = (hora_corte_dt + timedelta(hours=4)).strftime("%H:%M:%S")
-    next_ant  = (fecha_ant + timedelta(days=1)).isoformat()
-    end_dt    = f"{next_ant}T{hora_corte_utc}+00:00"
+    # 00:00 Chile = 04:00 UTC
+    start_dt = f"{fecha_ant}T04:00:00+00:00"
+    # hora_corte en Chile → sumar 4h para UTC, pero si pasa de medianoche UTC usar día siguiente
+    from datetime import datetime as _dt
+    hora_corte_dt  = _dt.strptime(hora_corte, "%H:%M:%S")
+    hora_corte_utc = hora_corte_dt + timedelta(hours=4)
+    if hora_corte_utc.day > 1:  # pasó medianoche UTC
+        next_ant = (fecha_ant + timedelta(days=1)).isoformat()
+        end_dt   = f"{next_ant}T{hora_corte_utc.strftime('%H:%M:%S')}+00:00"
+    else:
+        end_dt   = f"{fecha_ant}T{hora_corte_utc.strftime('%H:%M:%S')}+00:00"
 
     return start_dt, end_dt, fecha_ant, hora_corte
 
