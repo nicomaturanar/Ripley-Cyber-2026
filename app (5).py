@@ -227,11 +227,18 @@ def tabla_performance(df_act, df_ant, col, titulo, emoji):
     merged["var_uni"]  = merged.apply(lambda r: var_pct(r["uni_act"], r["uni_ant"]), axis=1)
     merged = merged.sort_values("gmv_act", ascending=False)
 
-    display = merged[[col,"gmv_act","var_gmv","uni_act","var_uni"]].copy()
-    display.columns = [titulo, "GMV", "Var% GMV", "Unidades", "Var% Uni"]
-    display["GMV"]      = display["GMV"].apply(lambda x: f"${x:,.0f}")
-    display["Var% GMV"] = display["Var% GMV"].apply(fmt_var)
-    display["Var% Uni"] = display["Var% Uni"].apply(fmt_var)
+    total_gmv = merged["gmv_act"].sum()
+    total_uni = merged["uni_act"].sum()
+    merged["share_gmv"] = merged["gmv_act"] / total_gmv * 100 if total_gmv else 0
+    merged["share_uni"] = merged["uni_act"] / total_uni * 100 if total_uni else 0
+
+    display = merged[[col,"gmv_act","share_gmv","var_gmv","uni_act","share_uni","var_uni"]].copy()
+    display.columns = [titulo, "GMV", "Share GMV", "Var% GMV", "Unidades", "Share Uni", "Var% Uni"]
+    display["GMV"]       = display["GMV"].apply(lambda x: f"${x:,.0f}")
+    display["Share GMV"] = display["Share GMV"].apply(lambda x: f"{x:.1f}%")
+    display["Share Uni"] = display["Share Uni"].apply(lambda x: f"{x:.1f}%")
+    display["Var% GMV"]  = display["Var% GMV"].apply(fmt_var)
+    display["Var% Uni"]  = display["Var% Uni"].apply(fmt_var)
 
     return display, merged
 
@@ -339,8 +346,30 @@ now_chile = datetime.now(timezone(timedelta(hours=-4)))
 if date_str == now_chile.strftime("%Y-%m-%d"):
     hourly_table = hourly_table.iloc[: now_chile.hour + 1]
 
+# Año anterior hora a hora
+if not df_ant.empty:
+    hourly_ant = (
+        df_ant.groupby("hour_label")
+        .agg(gmv_ant=("price","sum"), ord_ant=("order_id","nunique"))
+        .reset_index()
+    )
+    hourly_table = hourly_table.merge(hourly_ant, left_on="Hora", right_on="hour_label", how="left").drop(columns=["hour_label"])
+    hourly_table["gmv_ant"] = hourly_table["gmv_ant"].fillna(0)
+    hourly_table["Var% GMV"] = hourly_table.apply(lambda r: fmt_var(var_pct(r["GMV"], r["gmv_ant"])), axis=1)
+
+total_gmv_h = hourly_table["GMV"].sum()
+total_uni_h = hourly_table["Unidades"].sum()
+hourly_table["GMV acum"] = hourly_table["GMV"].cumsum()
+hourly_table["Share GMV"] = hourly_table["GMV"].apply(lambda x: f"{x/total_gmv_h*100:.1f}%" if total_gmv_h else "0%")
+hourly_table["Share Uni"] = hourly_table["Unidades"].apply(lambda x: f"{x/total_uni_h*100:.1f}%" if total_uni_h else "0%")
+
 display_h = hourly_table.copy()
-display_h["GMV"] = display_h["GMV"].apply(lambda x: f"${x:,.0f}")
+cols_show = ["Hora","Órdenes","GMV","Share GMV","Unidades","Share Uni","GMV acum"]
+if "Var% GMV" in display_h.columns:
+    cols_show.append("Var% GMV")
+display_h = display_h[cols_show]
+display_h["GMV"]      = display_h["GMV"].apply(lambda x: f"${x:,.0f}")
+display_h["GMV acum"] = display_h["GMV acum"].apply(lambda x: f"${x:,.0f}")
 st.dataframe(display_h, use_container_width=True, hide_index=True)
 
 col_g1, col_g2 = st.columns(2)
@@ -417,6 +446,11 @@ sku15_act = (
     .reset_index()
 )
 
+total_gmv_sku = sku15_act["gmv"].sum()
+total_uni_sku = sku15_act["unidades"].sum()
+sku15_act["Share GMV"] = sku15_act["gmv"].apply(lambda x: f"{x/total_gmv_sku*100:.1f}%" if total_gmv_sku else "0%")
+sku15_act["Share Uni"] = sku15_act["unidades"].apply(lambda x: f"{x/total_uni_sku*100:.1f}%" if total_uni_sku else "0%")
+
 if not df_ant.empty:
     sku15_ant = (
         df_ant.groupby("sku15")
@@ -429,12 +463,12 @@ if not df_ant.empty:
     sku15_act["Var% GMV"] = sku15_act.apply(lambda r: fmt_var(var_pct(r["gmv"], r["gmv_ant"])), axis=1)
     sku15_act["Var% Uni"] = sku15_act.apply(lambda r: fmt_var(var_pct(r["unidades"], r["uni_ant"])), axis=1)
     sku15_act = sku15_act.sort_values("gmv", ascending=False)
-    sku15_d = sku15_act[["sku15","producto","categoria","linea","marca","genero","ordenes","unidades","Var% Uni","gmv","Var% GMV"]].copy()
-    sku15_d.columns = ["SKU 15","Producto","Categoría","Línea","Marca","Género","Órdenes","Unidades","Var% Uni","GMV","Var% GMV"]
+    sku15_d = sku15_act[["sku15","producto","categoria","linea","marca","genero","ordenes","unidades","Share Uni","Var% Uni","gmv","Share GMV","Var% GMV"]].copy()
+    sku15_d.columns = ["SKU 15","Producto","Categoría","Línea","Marca","Género","Órdenes","Unidades","Share Uni","Var% Uni","GMV","Share GMV","Var% GMV"]
 else:
     sku15_act = sku15_act.sort_values("gmv", ascending=False)
-    sku15_d = sku15_act[["sku15","producto","categoria","linea","marca","genero","ordenes","unidades","gmv"]].copy()
-    sku15_d.columns = ["SKU 15","Producto","Categoría","Línea","Marca","Género","Órdenes","Unidades","GMV"]
+    sku15_d = sku15_act[["sku15","producto","categoria","linea","marca","genero","ordenes","unidades","Share Uni","gmv","Share GMV"]].copy()
+    sku15_d.columns = ["SKU 15","Producto","Categoría","Línea","Marca","Género","Órdenes","Unidades","Share Uni","GMV","Share GMV"]
 
 sku15_d["GMV"] = sku15_d["GMV"].apply(lambda x: f"${x:,.0f}")
 st.dataframe(sku15_d, use_container_width=True, hide_index=True)
