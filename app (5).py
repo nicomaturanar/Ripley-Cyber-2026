@@ -125,15 +125,39 @@ def get_rango_anio_anterior(date_str: str):
 
 # ── API ───────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
-def get_orders(date_str: str) -> list:
-    start_dt = f"{date_str}T04:00:00+00:00"
-    next_day  = (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
+def get_orders(start_str: str, end_str: str) -> list:
+    # start_str y end_str son fechas Chile YYYY-MM-DD
+    start_dt = f"{start_str}T04:00:00+00:00"
+    next_day  = (date.fromisoformat(end_str) + timedelta(days=1)).isoformat()
     end_dt    = f"{next_day}T03:59:59+00:00"
     return _fetch_orders(start_dt, end_dt)
 
 @st.cache_data(ttl=300)
-def get_orders_anterior(date_str: str) -> list:
-    start_dt, end_dt, _, _ = get_rango_anio_anterior(date_str)
+def get_orders_anterior(start_str: str, end_str: str) -> list:
+    # Calcula el mismo rango ISO del año anterior
+    d_start = date.fromisoformat(start_str)
+    d_end   = date.fromisoformat(end_str)
+    ant_start = date.fromisocalendar(d_start.year-1, d_start.isocalendar()[1], d_start.isocalendar()[2])
+    ant_end   = date.fromisocalendar(d_end.year-1,   d_end.isocalendar()[1],   d_end.isocalendar()[2])
+
+    chile_tz  = timezone(timedelta(hours=-4))
+    ahora     = datetime.now(chile_tz)
+    hoy_str   = ahora.strftime("%Y-%m-%d")
+
+    # Si el rango termina hoy, cortar a la hora actual
+    if end_str == hoy_str:
+        hora_corte_dt  = datetime.strptime(ahora.strftime("%H:%M:%S"), "%H:%M:%S")
+        hora_corte_utc = hora_corte_dt + timedelta(hours=4)
+        if hora_corte_utc.day > 1:
+            next_ant = (ant_end + timedelta(days=1)).isoformat()
+            end_dt   = f"{next_ant}T{hora_corte_utc.strftime('%H:%M:%S')}+00:00"
+        else:
+            end_dt   = f"{ant_end}T{hora_corte_utc.strftime('%H:%M:%S')}+00:00"
+    else:
+        next_ant = (ant_end + timedelta(days=1)).isoformat()
+        end_dt   = f"{next_ant}T03:59:59+00:00"
+
+    start_dt = f"{ant_start}T04:00:00+00:00"
     return _fetch_orders(start_dt, end_dt)
 
 def _fetch_orders(start_dt: str, end_dt: str) -> list:
@@ -251,26 +275,34 @@ st.caption("Datos en tiempo real vía API Mercado Ripley (Mirakl)")
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Configuración")
-    selected_date = st.date_input(
-        "Fecha a analizar (hora Chile)",
-        value=datetime.now(timezone(timedelta(hours=-4))).date(),
-        max_value=datetime.now(timezone(timedelta(hours=-4))).date(),
+    hoy_chile = datetime.now(timezone(timedelta(hours=-4))).date()
+    rango = st.date_input(
+        "Rango de fechas (hora Chile)",
+        value=(hoy_chile, hoy_chile),
+        max_value=hoy_chile,
     )
+    if isinstance(rango, (list, tuple)) and len(rango) == 2:
+        fecha_inicio, fecha_fin = rango
+    else:
+        fecha_inicio = fecha_fin = rango[0] if rango else hoy_chile
+
     auto_refresh = st.toggle("Auto-refresh (10 min)", value=False)
     if st.button("🔄 Refrescar ahora"):
         st.cache_data.clear()
         st.rerun()
 
-date_str = selected_date.strftime("%Y-%m-%d")
+start_str = fecha_inicio.strftime("%Y-%m-%d")
+end_str   = fecha_fin.strftime("%Y-%m-%d")
+date_str  = start_str  # para compatibilidad con hora a hora
 
 # ── Carga de datos ────────────────────────────────────────────────────────────
 col_spin1, col_spin2 = st.columns(2)
 with col_spin1:
     with st.spinner("Cargando órdenes actuales..."):
-        orders_raw = get_orders(date_str)
+        orders_raw = get_orders(start_str, end_str)
 with col_spin2:
     with st.spinner("Cargando año anterior..."):
-        orders_ant = get_orders_anterior(date_str)
+        orders_ant = get_orders_anterior(start_str, end_str)
 
 if not orders_raw:
     st.warning("No se encontraron órdenes para la fecha seleccionada.")
@@ -280,8 +312,7 @@ df_all = parse_orders(orders_raw)
 df_ant = parse_orders(orders_ant) if orders_ant else pd.DataFrame()
 
 # Info año anterior
-_, _, fecha_ant, hora_corte = get_rango_anio_anterior(date_str)
-st.caption(f"📅 Comparando vs {fecha_ant} hasta las {hora_corte[:5]} h (mismo día ISO año anterior)")
+st.caption(f"📅 Mostrando {start_str} → {end_str} | Comparando vs mismo rango ISO año anterior")
 
 # ── Filtros ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -320,7 +351,7 @@ avg_ticket   = total_gmv / total_orders if total_orders else 0
 gmv_ant  = df_ant["price"].sum()    if not df_ant.empty else 0
 uni_ant  = df_ant["quantity"].sum() if not df_ant.empty else 0
 
-st.subheader(f"📊 Resumen del {date_str} (hora Chile)")
+st.subheader(f"📊 Resumen {start_str} → {end_str} (hora Chile)")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🛒 Órdenes",         f"{total_orders:,}")
 c2.metric("💰 GMV",             f"${total_gmv:,.0f}",  fmt_var(var_pct(total_gmv,  gmv_ant)))
@@ -343,7 +374,7 @@ hourly_table = (
 )
 hourly_table.columns = ["Hora","Órdenes","GMV","Unidades"]
 now_chile = datetime.now(timezone(timedelta(hours=-4)))
-if date_str == now_chile.strftime("%Y-%m-%d"):
+if start_str == end_str and end_str == now_chile.strftime("%Y-%m-%d"):
     hourly_table = hourly_table.iloc[: now_chile.hour + 1]
 
 # Año anterior hora a hora
