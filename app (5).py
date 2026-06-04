@@ -509,4 +509,72 @@ st.download_button("⬇️ Descargar CSV", csv, "ordenes_ripley_sku15.csv", "tex
 
 if auto_refresh:
     time.sleep(600)
+    
+st.divider()
+
+# ── Easy Fit 16 HRS ───────────────────────────────────────────────────────────
+st.subheader("👟 Performance Easy Fit 16 HRS")
+st.caption("SKU 15 con prefijo 16M0362 o 16U0362")
+
+EASY_FIT_PREFIJOS = ["16M0362", "16U0362"]
+df_ef     = df[df["sku15"].str.upper().str.startswith(tuple(EASY_FIT_PREFIJOS))]
+df_ef_ant = df_ant[df_ant["sku15"].str.upper().str.startswith(tuple(EASY_FIT_PREFIJOS))] if not df_ant.empty else pd.DataFrame()
+
+if df_ef.empty:
+    st.info("Sin ventas de Easy Fit 16 HRS en el período seleccionado.")
+else:
+    ef_gmv    = df_ef["price"].sum()
+    ef_uni    = df_ef["quantity"].sum()
+    ef_ord    = df_ef["order_id"].nunique()
+    ef_ticket = ef_gmv / ef_ord if ef_ord else 0
+    ef_gmv_ant = df_ef_ant["price"].sum()    if not df_ef_ant.empty else 0
+    ef_uni_ant = df_ef_ant["quantity"].sum() if not df_ef_ant.empty else 0
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("🛒 Órdenes",         f"{ef_ord:,}")
+    k2.metric("💰 GMV",             f"${ef_gmv:,.0f}",  fmt_var(var_pct(ef_gmv, ef_gmv_ant)))
+    k3.metric("📦 Unidades",        f"{ef_uni:,}",      fmt_var(var_pct(ef_uni, ef_uni_ant)))
+    k4.metric("🎯 Ticket promedio", f"${ef_ticket:,.0f}")
+
+    ef_act = (
+        df_ef.groupby("sku15")
+        .agg(
+            producto = ("product",  "first"),
+            genero   = ("genero",   "first"),
+            ordenes  = ("order_id", "nunique"),
+            unidades = ("quantity", "sum"),
+            gmv      = ("price",    "sum"),
+        )
+        .reset_index()
+    )
+    total_ef_gmv = ef_act["gmv"].sum()
+    total_ef_uni = ef_act["unidades"].sum()
+    ef_act["Share GMV"] = ef_act["gmv"].apply(lambda x: f"{x/total_ef_gmv*100:.1f}%" if total_ef_gmv else "0%")
+    ef_act["Share Uni"] = ef_act["unidades"].apply(lambda x: f"{x/total_ef_uni*100:.1f}%" if total_ef_uni else "0%")
+
+    if not df_ef_ant.empty:
+        ef_ant = (
+            df_ef_ant.groupby("sku15")
+            .agg(uni_ant=("quantity","sum"), gmv_ant=("price","sum"))
+            .reset_index()
+        )
+        ef_act = ef_act.merge(ef_ant, on="sku15", how="left")
+        ef_act["gmv_ant"] = ef_act["gmv_ant"].fillna(0)
+        ef_act["uni_ant"] = ef_act["uni_ant"].fillna(0)
+        ef_act["Var% GMV"] = ef_act.apply(lambda r: fmt_var(var_pct(r["gmv"], r["gmv_ant"])), axis=1)
+        ef_act["Var% Uni"] = ef_act.apply(lambda r: fmt_var(var_pct(r["unidades"], r["uni_ant"])), axis=1)
+        ef_act = ef_act.sort_values("gmv", ascending=False)
+        ef_d = ef_act[["sku15","producto","genero","ordenes","unidades","Share Uni","Var% Uni","gmv","Share GMV","Var% GMV"]].copy()
+        ef_d.columns = ["SKU 15","Producto","Género","Órdenes","Unidades","Share Uni","Var% Uni","GMV","Share GMV","Var% GMV"]
+    else:
+        ef_act = ef_act.sort_values("gmv", ascending=False)
+        ef_d = ef_act[["sku15","producto","genero","ordenes","unidades","Share Uni","gmv","Share GMV"]].copy()
+        ef_d.columns = ["SKU 15","Producto","Género","Órdenes","Unidades","Share Uni","GMV","Share GMV"]
+
+    ef_d["GMV"] = ef_d["GMV"].apply(lambda x: f"${x:,.0f}")
+    st.dataframe(ef_d, use_container_width=True, hide_index=True)
+
+
+if auto_refresh:
+    time.sleep(600)
     st.rerun()
